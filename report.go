@@ -401,31 +401,19 @@ func (r *Report) String() string {
 			fmt.Fprintf(&b, "\n  %s: %s\n", strings.ToUpper(tr.Phase), tr.Name)
 
 			if len(tr.BlockingFailed) > 0 {
-				fmt.Fprintf(&b, "    Blocking failures:\n")
-				for _, jf := range tr.BlockingFailed {
-					retryStr := ""
-					if jf.Retries > 0 {
-						retryStr = fmt.Sprintf(", %d retries", jf.Retries)
-					}
-					fmt.Fprintf(&b, "      - %s (Failed%s)\n", jf.Name, retryStr)
-					if jf.URL != "" {
-						fmt.Fprintf(&b, "        %s\n", jf.URL)
-					}
+				names := make([]string, len(tr.BlockingFailed))
+				for i, jf := range tr.BlockingFailed {
+					names[i] = jf.Name
 				}
+				fmt.Fprintf(&b, "    Blocking:  %s\n", strings.Join(names, ", "))
 			}
 
 			if len(tr.InformingFailed) > 0 {
-				fmt.Fprintf(&b, "    Informing failures:\n")
-				for _, jf := range tr.InformingFailed {
-					retryStr := ""
-					if jf.Retries > 0 {
-						retryStr = fmt.Sprintf(", %d retries", jf.Retries)
-					}
-					fmt.Fprintf(&b, "      - %s (Failed%s)\n", jf.Name, retryStr)
-					if jf.URL != "" {
-						fmt.Fprintf(&b, "        %s\n", jf.URL)
-					}
+				names := make([]string, len(tr.InformingFailed))
+				for i, jf := range tr.InformingFailed {
+					names[i] = jf.Name
 				}
+				fmt.Fprintf(&b, "    Informing: %s\n", strings.Join(names, ", "))
 			}
 
 			if tr.Phase == "Failed" && len(tr.BlockingFailed) == 0 {
@@ -433,18 +421,17 @@ func (r *Report) String() string {
 			}
 
 			if tr.AnalysisHTMLURL != "" {
-				fmt.Fprintf(&b, "    Analysis: %s\n", tr.AnalysisHTMLURL)
+				fmt.Fprintf(&b, "    Analysis:  %s\n", tr.AnalysisHTMLURL)
 			}
 
 			if len(tr.RootCauses) > 0 {
-				fmt.Fprintf(&b, "    Root causes:\n")
 				for _, rc := range tr.RootCauses {
-					fmt.Fprintf(&b, "      - %s\n", rc)
+					fmt.Fprintf(&b, "    Root cause: %s\n", rc)
 				}
 			}
 
 			if tr.RejectionStreak > 1 {
-				fmt.Fprintf(&b, "    Rejection streak: %d\n", tr.RejectionStreak)
+				fmt.Fprintf(&b, "    Streak:    %d consecutive rejections\n", tr.RejectionStreak)
 			}
 		}
 		fmt.Fprintf(&b, "\n")
