@@ -167,15 +167,26 @@ func formatSlackSummary(r *Report, slackAlias string) string {
 	}
 
 	totalFailures := 0
+	staleCount := 0
 	for _, sr := range r.Streams {
 		totalFailures += sr.RejectedCount + sr.FailedCount
+		if sr.AcceptedStale || sr.BuildStale {
+			staleCount++
+		}
 	}
 
-	if totalFailures == 0 {
+	if totalFailures == 0 && staleCount == 0 {
 		fmt.Fprintf(&b, "All monitored OKD release streams are healthy (lookback: %s)", r.Lookback)
 	} else {
-		fmt.Fprintf(&b, "OKD Release Report — %d failed/rejected builds across %d streams (lookback: %s)",
-			totalFailures, len(r.Streams), r.Lookback)
+		parts := []string{}
+		if totalFailures > 0 {
+			parts = append(parts, fmt.Sprintf("%d failed/rejected builds", totalFailures))
+		}
+		if staleCount > 0 {
+			parts = append(parts, fmt.Sprintf("%d stale streams", staleCount))
+		}
+		fmt.Fprintf(&b, "OKD Release Report — %s (lookback: %s)",
+			strings.Join(parts, ", "), r.Lookback)
 	}
 
 	return b.String()
@@ -185,13 +196,29 @@ func formatSlackDetail(r *Report) string {
 	var b strings.Builder
 
 	for _, sr := range r.Streams {
-		if sr.RejectedCount+sr.FailedCount == 0 && len(sr.FailedRejected) == 0 {
+		hasIssues := sr.RejectedCount+sr.FailedCount > 0 || sr.AcceptedStale || sr.BuildStale
+		if !hasIssues {
 			continue
 		}
 
 		fmt.Fprintf(&b, "<%s|%s>\n", sr.StreamURL, sr.StreamName)
 		fmt.Fprintf(&b, "  %d builds | %d Accepted | %d Rejected | %d Failed\n",
 			sr.TotalInWindow, sr.AcceptedCount, sr.RejectedCount, sr.FailedCount)
+
+		if sr.AcceptedStale {
+			if sr.LastAcceptedTag != "" {
+				fmt.Fprintf(&b, "  *WARNING:* No accepted payload in %s (last: %s)\n", sr.LastAcceptedAge, sr.LastAcceptedTag)
+			} else {
+				fmt.Fprintf(&b, "  *WARNING:* No accepted payload found\n")
+			}
+		}
+		if sr.BuildStale {
+			if sr.LastBuiltTag != "" {
+				fmt.Fprintf(&b, "  *WARNING:* No payload built in %s (last: %s)\n", sr.LastBuiltAge, sr.LastBuiltTag)
+			} else {
+				fmt.Fprintf(&b, "  *WARNING:* No payload built\n")
+			}
+		}
 
 		for _, tr := range sr.FailedRejected {
 			if tr.Phase == "Accepted" {

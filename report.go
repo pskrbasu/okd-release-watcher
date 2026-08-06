@@ -14,8 +14,12 @@ import (
 	"k8s.io/klog/v2"
 )
 
+const (
+	acceptedStalenessLimit = 24 * time.Hour
+	builtStalenessLimit    = 72 * time.Hour
+)
+
 var (
-	// Matches timestamps embedded in nightly tag names: YYYY-MM-DD-HHMMSS
 	tagDateRegex = regexp.MustCompile(`(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})(\d{2})$`)
 	httpClient   = &http.Client{Timeout: 30 * time.Second}
 )
@@ -63,13 +67,19 @@ type Report struct {
 }
 
 type StreamReport struct {
-	StreamName     string      `json:"stream_name"`
-	StreamURL      string      `json:"stream_url"`
-	TotalInWindow  int         `json:"total_in_window"`
-	AcceptedCount  int         `json:"accepted_count"`
-	RejectedCount  int         `json:"rejected_count"`
-	FailedCount    int         `json:"failed_count"`
-	FailedRejected []TagReport `json:"failed_rejected,omitempty"`
+	StreamName      string      `json:"stream_name"`
+	StreamURL       string      `json:"stream_url"`
+	TotalInWindow   int         `json:"total_in_window"`
+	AcceptedCount   int         `json:"accepted_count"`
+	RejectedCount   int         `json:"rejected_count"`
+	FailedCount     int         `json:"failed_count"`
+	AcceptedStale   bool        `json:"accepted_stale"`
+	LastAcceptedAge string      `json:"last_accepted_age,omitempty"`
+	LastAcceptedTag string      `json:"last_accepted_tag,omitempty"`
+	BuildStale      bool        `json:"build_stale"`
+	LastBuiltAge    string      `json:"last_built_age,omitempty"`
+	LastBuiltTag    string      `json:"last_built_tag,omitempty"`
+	FailedRejected  []TagReport `json:"failed_rejected,omitempty"`
 }
 
 type TagReport struct {
@@ -215,7 +225,71 @@ func processStream(stream string, cutoff time.Time, includeHealthy bool) (Stream
 		}
 	}
 
+	// Compute staleness across ALL tags (not just the lookback window)
+	now := time.Now().UTC()
+	computeStaleness(&sr, tags.Tags, now)
+
 	return sr, nil
+}
+
+func computeStaleness(sr *StreamReport, allTags []Tag, now time.Time) {
+	var foundAccepted, foundBuilt bool
+
+	for _, tag := range allTags {
+		isTerminal := tag.Phase == "Accepted" || tag.Phase == "Rejected" || tag.Phase == "Failed"
+		if !isTerminal {
+			continue
+		}
+
+		ts, ok := parseTagTimestamp(tag.Name)
+		if !ok {
+			continue
+		}
+
+		age := now.Sub(ts)
+
+		if !foundBuilt {
+			foundBuilt = true
+			sr.LastBuiltTag = tag.Name
+			sr.LastBuiltAge = formatAge(age)
+			if age > builtStalenessLimit {
+				sr.BuildStale = true
+			}
+		}
+
+		if !foundAccepted && tag.Phase == "Accepted" {
+			foundAccepted = true
+			sr.LastAcceptedTag = tag.Name
+			sr.LastAcceptedAge = formatAge(age)
+			if age > acceptedStalenessLimit {
+				sr.AcceptedStale = true
+			}
+		}
+
+		if foundAccepted && foundBuilt {
+			break
+		}
+	}
+
+	if !foundAccepted {
+		sr.AcceptedStale = true
+		sr.LastAcceptedAge = "never"
+	}
+	if !foundBuilt {
+		sr.BuildStale = true
+		sr.LastBuiltAge = "never"
+	}
+}
+
+func formatAge(d time.Duration) string {
+	hours := d.Hours()
+	if hours < 1 {
+		return fmt.Sprintf("%.0f minutes", d.Minutes())
+	}
+	if hours < 48 {
+		return fmt.Sprintf("%.1f hours", hours)
+	}
+	return fmt.Sprintf("%.1f days", hours/24)
 }
 
 func processTag(stream string, tag Tag) TagReport {
@@ -361,31 +435,50 @@ func (r *Report) String() string {
 
 	totalFailures := 0
 	streamsWithFailures := 0
+	staleStreams := 0
 
 	for _, sr := range r.Streams {
 		fmt.Fprintf(&b, "--- %s ---\n", sr.StreamName)
 		fmt.Fprintf(&b, "%s\n", sr.StreamURL)
 
 		if sr.TotalInWindow == 0 {
-			fmt.Fprintf(&b, "  No builds in window\n\n")
-			continue
+			fmt.Fprintf(&b, "  No builds in window\n")
+		} else {
+			fmt.Fprintf(&b, "  %d builds in window", sr.TotalInWindow)
+			parts := []string{}
+			if sr.AcceptedCount > 0 {
+				parts = append(parts, fmt.Sprintf("%d Accepted", sr.AcceptedCount))
+			}
+			if sr.RejectedCount > 0 {
+				parts = append(parts, fmt.Sprintf("%d Rejected", sr.RejectedCount))
+			}
+			if sr.FailedCount > 0 {
+				parts = append(parts, fmt.Sprintf("%d Failed", sr.FailedCount))
+			}
+			if len(parts) > 0 {
+				fmt.Fprintf(&b, " | %s", strings.Join(parts, " | "))
+			}
+			fmt.Fprintf(&b, "\n")
 		}
 
-		fmt.Fprintf(&b, "  %d builds in window", sr.TotalInWindow)
-		parts := []string{}
-		if sr.AcceptedCount > 0 {
-			parts = append(parts, fmt.Sprintf("%d Accepted", sr.AcceptedCount))
+		if sr.AcceptedStale {
+			if sr.LastAcceptedTag != "" {
+				fmt.Fprintf(&b, "  WARNING: No accepted payload in %s (last: %s)\n", sr.LastAcceptedAge, sr.LastAcceptedTag)
+			} else {
+				fmt.Fprintf(&b, "  WARNING: No accepted payload found\n")
+			}
 		}
-		if sr.RejectedCount > 0 {
-			parts = append(parts, fmt.Sprintf("%d Rejected", sr.RejectedCount))
+		if sr.BuildStale {
+			if sr.LastBuiltTag != "" {
+				fmt.Fprintf(&b, "  WARNING: No payload built in %s (last: %s)\n", sr.LastBuiltAge, sr.LastBuiltTag)
+			} else {
+				fmt.Fprintf(&b, "  WARNING: No payload built\n")
+			}
 		}
-		if sr.FailedCount > 0 {
-			parts = append(parts, fmt.Sprintf("%d Failed", sr.FailedCount))
+
+		if sr.AcceptedStale || sr.BuildStale {
+			staleStreams++
 		}
-		if len(parts) > 0 {
-			fmt.Fprintf(&b, " | %s", strings.Join(parts, " | "))
-		}
-		fmt.Fprintf(&b, "\n")
 
 		failCount := sr.RejectedCount + sr.FailedCount
 		if failCount > 0 {
@@ -393,8 +486,8 @@ func (r *Report) String() string {
 			totalFailures += failCount
 		}
 
-		if len(sr.FailedRejected) == 0 {
-			fmt.Fprintf(&b, "  No failures in window\n")
+		if len(sr.FailedRejected) == 0 && !sr.AcceptedStale && !sr.BuildStale {
+			fmt.Fprintf(&b, "  No issues detected\n")
 		}
 
 		for _, tr := range sr.FailedRejected {
@@ -438,8 +531,8 @@ func (r *Report) String() string {
 	}
 
 	fmt.Fprintf(&b, "--- Summary ---\n")
-	fmt.Fprintf(&b, "Streams: %d | With failures: %d | Failed/Rejected builds: %d\n",
-		len(r.Streams), streamsWithFailures, totalFailures)
+	fmt.Fprintf(&b, "Streams: %d | With failures: %d | Stale: %d | Failed/Rejected builds: %d\n",
+		len(r.Streams), streamsWithFailures, staleStreams, totalFailures)
 
 	return b.String()
 }
