@@ -196,6 +196,10 @@ func formatSlackDetail(r *report.Report) string {
 		fmt.Fprintf(&b, "  %d builds | %d Accepted | %d Rejected | %d Failed\n",
 			sr.TotalInWindow, sr.AcceptedCount, sr.RejectedCount, sr.FailedCount)
 
+		if sr.LatestTag != "" {
+			fmt.Fprintf(&b, "  Latest: %s (*%s*)\n", sr.LatestTag, sr.LatestPhase)
+		}
+
 		if sr.AcceptedStale {
 			if sr.LastAcceptedTag != "" {
 				fmt.Fprintf(&b, "  *WARNING:* No accepted payload in %s (last: %s)\n", sr.LastAcceptedAge, sr.LastAcceptedTag)
