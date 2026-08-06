@@ -187,14 +187,27 @@ func formatSlackDetail(r *report.Report) string {
 	var b strings.Builder
 
 	for _, sr := range r.Streams {
-		hasIssues := sr.RejectedCount+sr.FailedCount > 0 || sr.AcceptedStale || sr.BuildStale
-		if !hasIssues {
-			continue
-		}
+		fmt.Fprintf(&b, "--- <%s|%s> ---\n", sr.StreamURL, sr.StreamName)
 
-		fmt.Fprintf(&b, "<%s|%s>\n", sr.StreamURL, sr.StreamName)
-		fmt.Fprintf(&b, "  %d builds | %d Accepted | %d Rejected | %d Failed\n",
-			sr.TotalInWindow, sr.AcceptedCount, sr.RejectedCount, sr.FailedCount)
+		if sr.TotalInWindow == 0 {
+			fmt.Fprintf(&b, "  No builds in window\n")
+		} else {
+			fmt.Fprintf(&b, "  %d builds in window", sr.TotalInWindow)
+			parts := []string{}
+			if sr.AcceptedCount > 0 {
+				parts = append(parts, fmt.Sprintf("%d Accepted", sr.AcceptedCount))
+			}
+			if sr.RejectedCount > 0 {
+				parts = append(parts, fmt.Sprintf("%d Rejected", sr.RejectedCount))
+			}
+			if sr.FailedCount > 0 {
+				parts = append(parts, fmt.Sprintf("%d Failed", sr.FailedCount))
+			}
+			if len(parts) > 0 {
+				fmt.Fprintf(&b, " | %s", strings.Join(parts, " | "))
+			}
+			fmt.Fprintf(&b, "\n")
+		}
 
 		if sr.LatestTag != "" {
 			fmt.Fprintf(&b, "  Latest: %s (*%s*)\n", sr.LatestTag, sr.LatestPhase)
@@ -215,36 +228,73 @@ func formatSlackDetail(r *report.Report) string {
 			}
 		}
 
+		if len(sr.FailedRejected) == 0 && !sr.AcceptedStale && !sr.BuildStale {
+			fmt.Fprintf(&b, "  No issues detected\n")
+		}
+
 		for _, tr := range sr.FailedRejected {
 			if tr.Phase == "Accepted" {
 				continue
 			}
 			fmt.Fprintf(&b, "\n  *%s:* %s\n", strings.ToUpper(tr.Phase), tr.Name)
 
-			for _, jf := range tr.BlockingFailed {
-				retryStr := ""
-				if jf.Retries > 0 {
-					retryStr = fmt.Sprintf(", %d retries", jf.Retries)
+			if len(tr.BlockingFailed) > 0 {
+				names := make([]string, len(tr.BlockingFailed))
+				for i, jf := range tr.BlockingFailed {
+					names[i] = jf.Name
 				}
-				fmt.Fprintf(&b, "    • [blocking] %s (Failed%s)\n", jf.Name, retryStr)
+				fmt.Fprintf(&b, "    Blocking:  %s\n", strings.Join(names, ", "))
 			}
-			for _, jf := range tr.InformingFailed {
-				retryStr := ""
-				if jf.Retries > 0 {
-					retryStr = fmt.Sprintf(", %d retries", jf.Retries)
+
+			if len(tr.InformingFailed) > 0 {
+				names := make([]string, len(tr.InformingFailed))
+				for i, jf := range tr.InformingFailed {
+					names[i] = jf.Name
 				}
-				fmt.Fprintf(&b, "    • [informing] %s (Failed%s)\n", jf.Name, retryStr)
+				fmt.Fprintf(&b, "    Informing: %s\n", strings.Join(names, ", "))
+			}
+
+			if tr.Phase == "Failed" && len(tr.BlockingFailed) == 0 {
+				fmt.Fprintf(&b, "    Payload could not be assembled (no jobs ran)\n")
 			}
 
 			if tr.AnalysisHTMLURL != "" {
-				fmt.Fprintf(&b, "    <%s|Claude Analysis>\n", tr.AnalysisHTMLURL)
+				fmt.Fprintf(&b, "    Analysis:  %s\n", tr.AnalysisHTMLURL)
 			}
 
-			for _, rc := range tr.RootCauses {
-				fmt.Fprintf(&b, "    _Root cause:_ %s\n", rc)
+			if len(tr.RootCauses) > 0 {
+				for _, rc := range tr.RootCauses {
+					fmt.Fprintf(&b, "    Root cause: %s\n", rc)
+				}
+			}
+
+			if tr.RejectionStreak > 1 {
+				fmt.Fprintf(&b, "    Streak:    %d consecutive rejections\n", tr.RejectionStreak)
 			}
 		}
 		fmt.Fprintf(&b, "\n")
+	}
+
+	fmt.Fprintf(&b, "--- Stream Health ---\n")
+	for _, sr := range r.Streams {
+		acceptedStr := sr.LastAcceptedAge
+		if acceptedStr == "" {
+			acceptedStr = "N/A"
+		}
+		if sr.AcceptedStale {
+			acceptedStr += " !!"
+		}
+
+		builtStr := sr.LastBuiltAge
+		if builtStr == "" {
+			builtStr = "N/A"
+		}
+		if sr.BuildStale {
+			builtStr += " !!"
+		}
+
+		fmt.Fprintf(&b, "  %-40s Last accepted: %-20s Last built: %s\n",
+			sr.StreamName, acceptedStr, builtStr)
 	}
 
 	return b.String()
