@@ -141,8 +141,8 @@ func handleReport(o *report.Options, token, channel, ts, text string) {
 		return
 	}
 
-	summary := formatSlackSummary(r, o.SlackAlias)
-	detail := formatSlackDetail(r)
+	summary := FormatSlackSummary(r, o.SlackAlias)
+	detail := FormatSlackDetail(r)
 
 	sendSlackMessage(token, channel, ts, summary)
 	if detail != "" {
@@ -150,7 +150,7 @@ func handleReport(o *report.Options, token, channel, ts, text string) {
 	}
 }
 
-func formatSlackSummary(r *report.Report, slackAlias string) string {
+func FormatSlackSummary(r *report.Report, slackAlias string) string {
 	var b strings.Builder
 
 	if slackAlias != "" {
@@ -183,7 +183,7 @@ func formatSlackSummary(r *report.Report, slackAlias string) string {
 	return b.String()
 }
 
-func formatSlackDetail(r *report.Report) string {
+func FormatSlackDetail(r *report.Report) string {
 	var b strings.Builder
 
 	for _, sr := range r.Streams {

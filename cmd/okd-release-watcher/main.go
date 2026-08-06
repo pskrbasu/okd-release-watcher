@@ -16,6 +16,7 @@ import (
 
 func main() {
 	o := &report.Options{}
+	var slackFormat bool
 
 	rootCmd := &cobra.Command{
 		Use:   "okd-release-watcher",
@@ -33,6 +34,9 @@ func main() {
 			}
 			if o.JSONOutput {
 				fmt.Println(r.JSON())
+			} else if slackFormat {
+				fmt.Println(server.FormatSlackSummary(r, o.SlackAlias))
+				fmt.Println(server.FormatSlackDetail(r))
 			} else {
 				fmt.Println(r.String())
 			}
@@ -44,6 +48,7 @@ func main() {
 	reportCmd.Flags().DurationVar(&o.Lookback, "lookback", 24*time.Hour, "How far back to check for builds")
 	reportCmd.Flags().BoolVar(&o.IncludeHealthy, "include-healthy", false, "Include healthy (accepted) builds in output")
 	reportCmd.Flags().BoolVar(&o.JSONOutput, "json", false, "Output as JSON")
+	reportCmd.Flags().BoolVar(&slackFormat, "slack", false, "Output in Slack format (preview what the bot would post)")
 
 	botCmd := &cobra.Command{
 		Use:   "bot",
