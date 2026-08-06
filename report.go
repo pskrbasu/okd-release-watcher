@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	acceptedStalenessLimit = 24 * time.Hour
+	acceptedStalenessLimit = 48 * time.Hour
 	builtStalenessLimit    = 72 * time.Hour
 )
 
