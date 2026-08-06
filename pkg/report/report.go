@@ -84,6 +84,8 @@ type Report struct {
 type StreamReport struct {
 	StreamName      string      `json:"stream_name"`
 	StreamURL       string      `json:"stream_url"`
+	LatestTag       string      `json:"latest_tag,omitempty"`
+	LatestPhase     string      `json:"latest_phase,omitempty"`
 	TotalInWindow   int         `json:"total_in_window"`
 	AcceptedCount   int         `json:"accepted_count"`
 	RejectedCount   int         `json:"rejected_count"`
@@ -186,6 +188,10 @@ func processStream(stream string, cutoff time.Time, includeHealthy bool) (Stream
 	for _, tag := range tags.Tags {
 		if tag.Phase != "Accepted" && tag.Phase != "Rejected" && tag.Phase != "Failed" {
 			continue
+		}
+		if sr.LatestTag == "" {
+			sr.LatestTag = tag.Name
+			sr.LatestPhase = tag.Phase
 		}
 		ts, ok := ParseTagTimestamp(tag.Name)
 		if !ok {
@@ -462,6 +468,10 @@ func (r *Report) String() string {
 				fmt.Fprintf(&b, " | %s", strings.Join(parts, " | "))
 			}
 			fmt.Fprintf(&b, "\n")
+		}
+
+		if sr.LatestTag != "" {
+			fmt.Fprintf(&b, "  Latest: %s (%s)\n", sr.LatestTag, sr.LatestPhase)
 		}
 
 		if sr.AcceptedStale {
