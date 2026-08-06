@@ -259,7 +259,7 @@ func FormatSlackDetail(r *report.Report) string {
 			}
 
 			if tr.AnalysisHTMLURL != "" {
-				fmt.Fprintf(&b, "    Analysis:  %s\n", tr.AnalysisHTMLURL)
+				fmt.Fprintf(&b, "    Analysis:  <%s|Claude Payload Agent Report>\n", tr.AnalysisHTMLURL)
 			}
 
 			if len(tr.RootCauses) > 0 {
