@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"bytes"
@@ -11,16 +11,18 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pskrbasu/okd-release-watcher/pkg/report"
 	"k8s.io/klog/v2"
 )
 
-func (o *options) serve() error {
+var httpClient = &http.Client{Timeout: 30 * time.Second}
+
+func Serve(o *report.Options) error {
 	token := os.Getenv("TOKEN")
 	if token == "" {
 		return fmt.Errorf("TOKEN environment variable is required")
 	}
 
-	// Dedup cache to avoid processing the same Slack event twice
 	var msgCache sync.Map
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -38,7 +40,6 @@ func (o *options) serve() error {
 			return
 		}
 
-		// Handle Slack URL verification challenge
 		if event["type"] == "url_verification" {
 			w.Header().Set("Content-Type", "application/json")
 			challenge := map[string]string{"challenge": event["challenge"].(string)}
@@ -57,7 +58,6 @@ func (o *options) serve() error {
 			return
 		}
 
-		// Only process messages (not subtypes like bot messages, edits, etc.)
 		if eventData["type"] != "message" || eventData["subtype"] != nil {
 			w.WriteHeader(http.StatusOK)
 			return
@@ -67,7 +67,6 @@ func (o *options) serve() error {
 		channel, _ := eventData["channel"].(string)
 		text, _ := eventData["text"].(string)
 
-		// Deduplicate
 		if _, loaded := msgCache.LoadOrStore(ts, true); loaded {
 			w.WriteHeader(http.StatusOK)
 			return
@@ -76,7 +75,7 @@ func (o *options) serve() error {
 		w.WriteHeader(http.StatusOK)
 
 		go func() {
-			o.handleMessage(token, channel, ts, text)
+			handleMessage(o, token, channel, ts, text)
 		}()
 	})
 
@@ -84,29 +83,28 @@ func (o *options) serve() error {
 	return http.ListenAndServe(":8080", nil)
 }
 
-func (o *options) handleMessage(token, channel, ts, text string) {
+func handleMessage(o *report.Options, token, channel, ts, text string) {
 	text = strings.ToLower(strings.TrimSpace(text))
 
-	// Strip any bot mention from the text
 	if idx := strings.Index(text, ">"); idx >= 0 && strings.HasPrefix(text, "<@") {
 		text = strings.TrimSpace(text[idx+1:])
 	}
 
 	switch {
 	case strings.HasPrefix(text, "help"):
-		o.sendHelp(token, channel, ts)
+		sendHelp(o, token, channel, ts)
 	case strings.HasPrefix(text, "report"):
-		o.handleReport(token, channel, ts, text)
+		handleReport(o, token, channel, ts, text)
 	}
 }
 
-func (o *options) sendHelp(token, channel, ts string) {
+func sendHelp(o *report.Options, token, channel, ts string) {
 	help := `*OKD Payload Reporter*
 Available commands:
 • *report* — Generate a release stream health report
   Arguments:
   - lookback=<duration> (default: 24h)
-  - streams=<stream1>,<stream2> (default: ` + strings.Join(defaultStreams, ", ") + `)
+  - streams=<stream1>,<stream2> (default: ` + strings.Join(report.DefaultStreams, ", ") + `)
   - healthy — Include accepted builds
 • *help* — Show this message
 
@@ -115,51 +113,44 @@ Example: report lookback=48h healthy`
 	sendSlackMessage(token, channel, ts, help)
 }
 
-func (o *options) handleReport(token, channel, ts, text string) {
-	// Parse inline arguments from the message
-	reportOpts := &options{
-		streams:        o.streams,
-		lookback:       o.lookback,
-		includeHealthy: o.includeHealthy,
-		slackAlias:     o.slackAlias,
+func handleReport(o *report.Options, token, channel, ts, text string) {
+	reportOpts := &report.Options{
+		Streams:        o.Streams,
+		Lookback:       o.Lookback,
+		IncludeHealthy: o.IncludeHealthy,
+		SlackAlias:     o.SlackAlias,
 	}
 
 	parts := strings.Fields(text)
-	for _, part := range parts[1:] { // skip "report" itself
+	for _, part := range parts[1:] {
 		switch {
 		case strings.HasPrefix(part, "lookback="):
 			if d, err := time.ParseDuration(strings.TrimPrefix(part, "lookback=")); err == nil {
-				reportOpts.lookback = d
+				reportOpts.Lookback = d
 			}
 		case strings.HasPrefix(part, "streams="):
-			reportOpts.streams = strings.Split(strings.TrimPrefix(part, "streams="), ",")
+			reportOpts.Streams = strings.Split(strings.TrimPrefix(part, "streams="), ",")
 		case part == "healthy":
-			reportOpts.includeHealthy = true
-		case part == "tag":
-			if o.slackAlias != "" {
-				// Will be handled in the message prefix
-			}
+			reportOpts.IncludeHealthy = true
 		}
 	}
 
-	report, err := generateReport(reportOpts)
+	r, err := report.GenerateReport(reportOpts)
 	if err != nil {
 		sendSlackMessage(token, channel, ts, fmt.Sprintf("Error generating report: %v", err))
 		return
 	}
 
-	// Build summary for the top-level message
-	summary := formatSlackSummary(report, o.slackAlias)
-	detail := formatSlackDetail(report)
+	summary := formatSlackSummary(r, o.SlackAlias)
+	detail := formatSlackDetail(r)
 
-	// Post summary as reply, detail as thread
 	sendSlackMessage(token, channel, ts, summary)
 	if detail != "" {
 		sendSlackMessage(token, channel, ts, detail)
 	}
 }
 
-func formatSlackSummary(r *Report, slackAlias string) string {
+func formatSlackSummary(r *report.Report, slackAlias string) string {
 	var b strings.Builder
 
 	if slackAlias != "" {
@@ -192,7 +183,7 @@ func formatSlackSummary(r *Report, slackAlias string) string {
 	return b.String()
 }
 
-func formatSlackDetail(r *Report) string {
+func formatSlackDetail(r *report.Report) string {
 	var b strings.Builder
 
 	for _, sr := range r.Streams {

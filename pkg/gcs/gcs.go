@@ -1,4 +1,4 @@
-package main
+package gcs
 
 import (
 	"encoding/json"
@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"k8s.io/klog/v2"
 )
@@ -22,36 +23,32 @@ const (
 	artifactSubpath = "artifacts/claude-payload-agent/openshift-claude-payload-agent/artifacts/"
 )
 
-// GCS API response types
+var httpClient = &http.Client{Timeout: 30 * time.Second}
 
-type GCSListResponse struct {
+type gcsListResponse struct {
 	Prefixes      []string  `json:"prefixes,omitempty"`
-	Items         []GCSItem `json:"items,omitempty"`
+	Items         []gcsItem `json:"items,omitempty"`
 	NextPageToken string    `json:"nextPageToken,omitempty"`
 }
 
-type GCSItem struct {
+type gcsItem struct {
 	Name        string `json:"name"`
 	TimeCreated string `json:"timeCreated"`
 	Size        string `json:"size"`
 }
 
-// Agent build index maps payload tags to their analysis artifacts
-
 type AgentBuildIndex struct {
 	mu      sync.RWMutex
-	entries map[string]AgentBuildEntry
+	entries map[string]agentBuildEntry
 }
 
-type AgentBuildEntry struct {
+type agentBuildEntry struct {
 	BuildID    string
 	AutodlPath string
 	HTMLPath   string
 }
 
-// autodl.json types
-
-type AutodlJSON struct {
+type autodlJSON struct {
 	TableName string                       `json:"table_name"`
 	Schema    map[string]string            `json:"schema"`
 	Rows      []map[string]json.RawMessage `json:"rows"`
@@ -76,9 +73,9 @@ type PayloadTriageRow struct {
 	ForceAcceptRecommended string `json:"force_accept_recommended"`
 }
 
-func buildAgentIndex(maxBuilds int) (*AgentBuildIndex, error) {
+func BuildAgentIndex(maxBuilds int) (*AgentBuildIndex, error) {
 	index := &AgentBuildIndex{
-		entries: make(map[string]AgentBuildEntry),
+		entries: make(map[string]agentBuildEntry),
 	}
 
 	buildIDs, err := listAgentBuilds(maxBuilds)
@@ -88,7 +85,6 @@ func buildAgentIndex(maxBuilds int) (*AgentBuildIndex, error) {
 
 	klog.V(2).Infof("Found %d agent builds, scanning for artifacts", len(buildIDs))
 
-	// Scan builds in parallel (bounded concurrency)
 	sem := make(chan struct{}, 10)
 	var wg sync.WaitGroup
 
@@ -141,13 +137,12 @@ func listAgentBuilds(maxBuilds int) ([]string, error) {
 			return nil, fmt.Errorf("GET %s returned %d: %s", u, resp.StatusCode, string(body))
 		}
 
-		var result GCSListResponse
+		var result gcsListResponse
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 			return nil, fmt.Errorf("decoding GCS response: %w", err)
 		}
 
 		for _, prefix := range result.Prefixes {
-			// Extract build ID from prefix like "logs/jobname/1234567/"
 			parts := strings.Split(strings.TrimSuffix(prefix, "/"), "/")
 			if len(parts) > 0 {
 				allPrefixes = append(allPrefixes, parts[len(parts)-1])
@@ -160,7 +155,6 @@ func listAgentBuilds(maxBuilds int) ([]string, error) {
 		pageToken = result.NextPageToken
 	}
 
-	// Sort descending (newest first) — build IDs are numeric and monotonically increasing
 	sort.Sort(sort.Reverse(sort.StringSlice(allPrefixes)))
 
 	if len(allPrefixes) > maxBuilds {
@@ -170,7 +164,7 @@ func listAgentBuilds(maxBuilds int) ([]string, error) {
 	return allPrefixes, nil
 }
 
-func scanBuildArtifacts(buildID string) (map[string]AgentBuildEntry, error) {
+func scanBuildArtifacts(buildID string) (map[string]agentBuildEntry, error) {
 	prefix := agentJobPrefix + buildID + "/" + artifactSubpath
 	u := fmt.Sprintf("%s?prefix=%s", gcsAPIBase, url.QueryEscape(prefix))
 
@@ -184,17 +178,16 @@ func scanBuildArtifacts(buildID string) (map[string]AgentBuildEntry, error) {
 		return nil, fmt.Errorf("GET returned %d", resp.StatusCode)
 	}
 
-	var result GCSListResponse
+	var result gcsListResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decoding response: %w", err)
 	}
 
-	entries := make(map[string]AgentBuildEntry)
+	entries := make(map[string]agentBuildEntry)
 
 	for _, item := range result.Items {
 		filename := item.Name[strings.LastIndex(item.Name, "/")+1:]
 
-		// Match autodl.json files: payload-analysis-{TAG}-autodl.json
 		if strings.HasPrefix(filename, "payload-analysis-") && strings.HasSuffix(filename, "-autodl.json") {
 			tag := strings.TrimPrefix(filename, "payload-analysis-")
 			tag = strings.TrimSuffix(tag, "-autodl.json")
@@ -202,7 +195,7 @@ func scanBuildArtifacts(buildID string) (map[string]AgentBuildEntry, error) {
 			htmlFilename := fmt.Sprintf("payload-analysis-%s-summary.html", tag)
 			htmlPath := prefix + htmlFilename
 
-			entries[tag] = AgentBuildEntry{
+			entries[tag] = agentBuildEntry{
 				BuildID:    buildID,
 				AutodlPath: item.Name,
 				HTMLPath:   htmlPath,
@@ -213,7 +206,6 @@ func scanBuildArtifacts(buildID string) (map[string]AgentBuildEntry, error) {
 	return entries, nil
 }
 
-// GetAnalysis fetches the analysis for a given payload tag
 func (idx *AgentBuildIndex) GetAnalysis(tag string) (*[]PayloadTriageRow, string, error) {
 	idx.mu.RLock()
 	entry, ok := idx.entries[tag]
@@ -253,7 +245,7 @@ func fetchAutodlJSON(objectPath string) ([]PayloadTriageRow, error) {
 		return nil, fmt.Errorf("reading body: %w", err)
 	}
 
-	var autodl AutodlJSON
+	var autodl autodlJSON
 	if err := json.Unmarshal(body, &autodl); err != nil {
 		return nil, fmt.Errorf("decoding autodl.json: %w", err)
 	}

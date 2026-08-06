@@ -1,4 +1,4 @@
-package main
+package report
 
 import (
 	"encoding/json"
@@ -11,18 +11,33 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pskrbasu/okd-release-watcher/pkg/gcs"
 	"k8s.io/klog/v2"
 )
 
 const (
-	acceptedStalenessLimit = 48 * time.Hour
-	builtStalenessLimit    = 72 * time.Hour
+	ReleaseControllerURL   = "https://amd64.origin.releases.ci.openshift.org"
+	AcceptedStalenessLimit = 48 * time.Hour
+	BuiltStalenessLimit    = 72 * time.Hour
 )
 
 var (
 	tagDateRegex = regexp.MustCompile(`(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})(\d{2})$`)
 	httpClient   = &http.Client{Timeout: 30 * time.Second}
 )
+
+var DefaultStreams = []string{
+	"4.22.0-0.okd-scos-nightly",
+	"5.0.0-0.okd-scos-nightly",
+}
+
+type Options struct {
+	Streams        []string
+	Lookback       time.Duration
+	IncludeHealthy bool
+	JSONOutput     bool
+	SlackAlias     string
+}
 
 // API response types
 
@@ -51,11 +66,11 @@ type ReleaseResults struct {
 }
 
 type JobResult struct {
-	State              string   `json:"state"`
-	URL                string   `json:"url"`
-	Retries            int      `json:"retries,omitempty"`
+	State               string   `json:"state"`
+	URL                 string   `json:"url"`
+	Retries             int      `json:"retries,omitempty"`
 	PreviousAttemptURLs []string `json:"previousAttemptURLs,omitempty"`
-	TransitionTime     string   `json:"transitionTime"`
+	TransitionTime      string   `json:"transitionTime"`
 }
 
 // Report types
@@ -98,57 +113,54 @@ type JobFailure struct {
 	Retries int    `json:"retries,omitempty"`
 }
 
-func generateReport(o *options) (*Report, error) {
+func GenerateReport(o *Options) (*Report, error) {
 	report := &Report{
-		Lookback:  o.lookback,
+		Lookback:  o.Lookback,
 		Generated: time.Now().UTC(),
 	}
 
-	cutoff := time.Now().UTC().Add(-o.lookback)
+	cutoff := time.Now().UTC().Add(-o.Lookback)
 
-	// Build the GCS agent index concurrently
-	var agentIndex *AgentBuildIndex
+	var agentIndex *gcs.AgentBuildIndex
 	var agentErr error
 	var agentWg sync.WaitGroup
 	agentWg.Add(1)
 	go func() {
 		defer agentWg.Done()
-		agentIndex, agentErr = buildAgentIndex(100)
+		agentIndex, agentErr = gcs.BuildAgentIndex(100)
 		if agentErr != nil {
 			klog.Errorf("Failed to build agent index: %v", agentErr)
 		}
 	}()
 
-	// Fetch tags for all streams in parallel
 	type streamResult struct {
 		idx    int
 		report StreamReport
 		err    error
 	}
-	results := make(chan streamResult, len(o.streams))
+	results := make(chan streamResult, len(o.Streams))
 
-	for i, stream := range o.streams {
+	for i, stream := range o.Streams {
 		go func(idx int, stream string) {
-			sr, err := processStream(stream, cutoff, o.includeHealthy)
+			sr, err := processStream(stream, cutoff, o.IncludeHealthy)
 			results <- streamResult{idx: idx, report: sr, err: err}
 		}(i, stream)
 	}
 
-	streamReports := make([]StreamReport, len(o.streams))
-	for range o.streams {
+	streamReports := make([]StreamReport, len(o.Streams))
+	for range o.Streams {
 		r := <-results
 		if r.err != nil {
-			klog.Errorf("Error processing stream %s: %v", o.streams[r.idx], r.err)
+			klog.Errorf("Error processing stream %s: %v", o.Streams[r.idx], r.err)
 			streamReports[r.idx] = StreamReport{
-				StreamName: o.streams[r.idx],
-				StreamURL:  fmt.Sprintf("%s/#%s", releaseControllerURL, o.streams[r.idx]),
+				StreamName: o.Streams[r.idx],
+				StreamURL:  fmt.Sprintf("%s/#%s", ReleaseControllerURL, o.Streams[r.idx]),
 			}
 			continue
 		}
 		streamReports[r.idx] = r.report
 	}
 
-	// Wait for agent index before enriching with analysis
 	agentWg.Wait()
 
 	if agentIndex != nil && agentErr == nil {
@@ -162,7 +174,7 @@ func generateReport(o *options) (*Report, error) {
 func processStream(stream string, cutoff time.Time, includeHealthy bool) (StreamReport, error) {
 	sr := StreamReport{
 		StreamName: stream,
-		StreamURL:  fmt.Sprintf("%s/#%s", releaseControllerURL, stream),
+		StreamURL:  fmt.Sprintf("%s/#%s", ReleaseControllerURL, stream),
 	}
 
 	tags, err := fetchStreamTags(stream)
@@ -170,15 +182,13 @@ func processStream(stream string, cutoff time.Time, includeHealthy bool) (Stream
 		return sr, fmt.Errorf("fetching tags: %w", err)
 	}
 
-	// Filter tags by lookback window, only include terminal phases
 	var recentTags []Tag
 	for _, tag := range tags.Tags {
 		if tag.Phase != "Accepted" && tag.Phase != "Rejected" && tag.Phase != "Failed" {
 			continue
 		}
-		ts, ok := parseTagTimestamp(tag.Name)
+		ts, ok := ParseTagTimestamp(tag.Name)
 		if !ok {
-			// For tags without embedded timestamps (stable streams), include them
 			recentTags = append(recentTags, tag)
 			continue
 		}
@@ -189,7 +199,6 @@ func processStream(stream string, cutoff time.Time, includeHealthy bool) (Stream
 
 	sr.TotalInWindow = len(recentTags)
 
-	// Count and collect failed/rejected
 	for _, tag := range recentTags {
 		switch tag.Phase {
 		case "Accepted":
@@ -209,7 +218,6 @@ func processStream(stream string, cutoff time.Time, includeHealthy bool) (Stream
 		}
 	}
 
-	// Calculate rejection streak (consecutive non-accepted from newest)
 	if len(sr.FailedRejected) > 0 {
 		streak := 0
 		for _, tag := range recentTags {
@@ -225,7 +233,6 @@ func processStream(stream string, cutoff time.Time, includeHealthy bool) (Stream
 		}
 	}
 
-	// Compute staleness across ALL tags (not just the lookback window)
 	now := time.Now().UTC()
 	computeStaleness(&sr, tags.Tags, now)
 
@@ -241,7 +248,7 @@ func computeStaleness(sr *StreamReport, allTags []Tag, now time.Time) {
 			continue
 		}
 
-		ts, ok := parseTagTimestamp(tag.Name)
+		ts, ok := ParseTagTimestamp(tag.Name)
 		if !ok {
 			continue
 		}
@@ -251,8 +258,8 @@ func computeStaleness(sr *StreamReport, allTags []Tag, now time.Time) {
 		if !foundBuilt {
 			foundBuilt = true
 			sr.LastBuiltTag = tag.Name
-			sr.LastBuiltAge = formatAge(age)
-			if age > builtStalenessLimit {
+			sr.LastBuiltAge = FormatAge(age)
+			if age > BuiltStalenessLimit {
 				sr.BuildStale = true
 			}
 		}
@@ -260,8 +267,8 @@ func computeStaleness(sr *StreamReport, allTags []Tag, now time.Time) {
 		if !foundAccepted && tag.Phase == "Accepted" {
 			foundAccepted = true
 			sr.LastAcceptedTag = tag.Name
-			sr.LastAcceptedAge = formatAge(age)
-			if age > acceptedStalenessLimit {
+			sr.LastAcceptedAge = FormatAge(age)
+			if age > AcceptedStalenessLimit {
 				sr.AcceptedStale = true
 			}
 		}
@@ -281,7 +288,7 @@ func computeStaleness(sr *StreamReport, allTags []Tag, now time.Time) {
 	}
 }
 
-func formatAge(d time.Duration) string {
+func FormatAge(d time.Duration) string {
 	hours := d.Hours()
 	if hours < 1 {
 		return fmt.Sprintf("%.0f minutes", d.Minutes())
@@ -299,7 +306,6 @@ func processTag(stream string, tag Tag) TagReport {
 	}
 
 	if tag.Phase == "Failed" {
-		// Failed builds have no job results (payload couldn't be assembled)
 		return tr
 	}
 
@@ -338,7 +344,7 @@ func processTag(stream string, tag Tag) TagReport {
 	return tr
 }
 
-func enrichWithAnalysis(streams []StreamReport, index *AgentBuildIndex) {
+func enrichWithAnalysis(streams []StreamReport, index *gcs.AgentBuildIndex) {
 	var wg sync.WaitGroup
 	for i := range streams {
 		for j := range streams[i].FailedRejected {
@@ -368,7 +374,7 @@ func enrichWithAnalysis(streams []StreamReport, index *AgentBuildIndex) {
 }
 
 func fetchStreamTags(stream string) (*ReleaseStreamTags, error) {
-	url := fmt.Sprintf("%s/api/v1/releasestream/%s/tags", releaseControllerURL, stream)
+	url := fmt.Sprintf("%s/api/v1/releasestream/%s/tags", ReleaseControllerURL, stream)
 	klog.V(2).Infof("Fetching tags from %s", url)
 
 	resp, err := httpClient.Get(url)
@@ -391,7 +397,7 @@ func fetchStreamTags(stream string) (*ReleaseStreamTags, error) {
 }
 
 func fetchReleaseDetail(stream, tagName string) (*ReleaseDetail, error) {
-	url := fmt.Sprintf("%s/api/v1/releasestream/%s/release/%s", releaseControllerURL, stream, tagName)
+	url := fmt.Sprintf("%s/api/v1/releasestream/%s/release/%s", ReleaseControllerURL, stream, tagName)
 	klog.V(2).Infof("Fetching release detail from %s", url)
 
 	resp, err := httpClient.Get(url)
@@ -413,7 +419,7 @@ func fetchReleaseDetail(stream, tagName string) (*ReleaseDetail, error) {
 	return &detail, nil
 }
 
-func parseTagTimestamp(tagName string) (time.Time, bool) {
+func ParseTagTimestamp(tagName string) (time.Time, bool) {
 	matches := tagDateRegex.FindStringSubmatch(tagName)
 	if matches == nil {
 		return time.Time{}, false
@@ -426,7 +432,6 @@ func parseTagTimestamp(tagName string) (time.Time, bool) {
 	return t.UTC(), true
 }
 
-// String formats the report for human-readable CLI output
 func (r *Report) String() string {
 	var b strings.Builder
 
@@ -545,7 +550,6 @@ func (r *Report) String() string {
 	return b.String()
 }
 
-// JSON formats the report as JSON
 func (r *Report) JSON() string {
 	data, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
