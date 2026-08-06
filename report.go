@@ -160,9 +160,12 @@ func processStream(stream string, cutoff time.Time, includeHealthy bool) (Stream
 		return sr, fmt.Errorf("fetching tags: %w", err)
 	}
 
-	// Filter tags by lookback window
+	// Filter tags by lookback window, only include terminal phases
 	var recentTags []Tag
 	for _, tag := range tags.Tags {
+		if tag.Phase != "Accepted" && tag.Phase != "Rejected" && tag.Phase != "Failed" {
+			continue
+		}
 		ts, ok := parseTagTimestamp(tag.Name)
 		if !ok {
 			// For tags without embedded timestamps (stable streams), include them
@@ -188,9 +191,6 @@ func processStream(stream string, cutoff time.Time, includeHealthy bool) (Stream
 			sr.RejectedCount++
 		case "Failed":
 			sr.FailedCount++
-		case "Ready":
-			// Currently being tested, skip
-			continue
 		}
 
 		if tag.Phase == "Failed" || tag.Phase == "Rejected" || includeHealthy {
