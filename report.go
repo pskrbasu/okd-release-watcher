@@ -434,8 +434,6 @@ func (r *Report) String() string {
 	fmt.Fprintf(&b, "Lookback: %s | Generated: %s\n\n", r.Lookback, r.Generated.Format(time.RFC3339))
 
 	totalFailures := 0
-	streamsWithFailures := 0
-	staleStreams := 0
 
 	for _, sr := range r.Streams {
 		fmt.Fprintf(&b, "--- %s ---\n", sr.StreamName)
@@ -476,15 +474,7 @@ func (r *Report) String() string {
 			}
 		}
 
-		if sr.AcceptedStale || sr.BuildStale {
-			staleStreams++
-		}
-
-		failCount := sr.RejectedCount + sr.FailedCount
-		if failCount > 0 {
-			streamsWithFailures++
-			totalFailures += failCount
-		}
+		totalFailures += sr.RejectedCount + sr.FailedCount
 
 		if len(sr.FailedRejected) == 0 && !sr.AcceptedStale && !sr.BuildStale {
 			fmt.Fprintf(&b, "  No issues detected\n")
@@ -530,9 +520,27 @@ func (r *Report) String() string {
 		fmt.Fprintf(&b, "\n")
 	}
 
-	fmt.Fprintf(&b, "--- Summary ---\n")
-	fmt.Fprintf(&b, "Streams: %d | With failures: %d | Stale: %d | Failed/Rejected builds: %d\n",
-		len(r.Streams), streamsWithFailures, staleStreams, totalFailures)
+	fmt.Fprintf(&b, "--- Stream Health ---\n")
+	for _, sr := range r.Streams {
+		acceptedStr := sr.LastAcceptedAge
+		if acceptedStr == "" {
+			acceptedStr = "N/A"
+		}
+		if sr.AcceptedStale {
+			acceptedStr += " !!"
+		}
+
+		builtStr := sr.LastBuiltAge
+		if builtStr == "" {
+			builtStr = "N/A"
+		}
+		if sr.BuildStale {
+			builtStr += " !!"
+		}
+
+		fmt.Fprintf(&b, "  %-40s Last accepted: %-20s Last built: %s\n",
+			sr.StreamName, acceptedStr, builtStr)
+	}
 
 	return b.String()
 }
