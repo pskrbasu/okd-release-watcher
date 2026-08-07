@@ -97,6 +97,7 @@ type StreamReport struct {
 	LastBuiltAge    string      `json:"last_built_age,omitempty"`
 	LastBuiltTag    string      `json:"last_built_tag,omitempty"`
 	FailedRejected  []TagReport `json:"failed_rejected,omitempty"`
+	AcceptedBuilds  []TagReport `json:"accepted_builds,omitempty"`
 }
 
 type TagReport struct {
@@ -209,16 +210,19 @@ func processStream(stream string, cutoff time.Time, includeHealthy bool) (Stream
 		switch tag.Phase {
 		case "Accepted":
 			sr.AcceptedCount++
-			if !includeHealthy {
-				continue
+			tr := processTag(stream, tag)
+			if len(tr.InformingFailed) > 0 {
+				sr.AcceptedBuilds = append(sr.AcceptedBuilds, tr)
+			}
+			if includeHealthy {
+				sr.FailedRejected = append(sr.FailedRejected, tr)
 			}
 		case "Rejected":
 			sr.RejectedCount++
+			tr := processTag(stream, tag)
+			sr.FailedRejected = append(sr.FailedRejected, tr)
 		case "Failed":
 			sr.FailedCount++
-		}
-
-		if tag.Phase == "Failed" || tag.Phase == "Rejected" || includeHealthy {
 			tr := processTag(stream, tag)
 			sr.FailedRejected = append(sr.FailedRejected, tr)
 		}

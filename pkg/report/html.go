@@ -181,6 +181,33 @@ func (r *Report) HTML() string {
   }
   .streak { font-size: 12px; color: var(--yellow); margin-top: 6px; }
   .no-issues { padding: 12px 0; color: var(--green); font-size: 13px; }
+  .info-section {
+    margin: 16px 0 4px;
+    font-size: 12px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 500;
+  }
+  .build-entry-info {
+    margin: 8px 0;
+    padding: 10px 16px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--blue);
+    border-radius: 0 6px 6px 0;
+  }
+  .build-entry-info .build-title { margin-bottom: 4px; }
+  .info-jobs {
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+  .info-jobs .label {
+    color: var(--text-muted);
+    font-weight: 500;
+    min-width: 120px;
+    display: inline-block;
+  }
   .toggle-arrow {
     color: var(--text-muted);
     font-size: 12px;
@@ -316,7 +343,7 @@ func (r *Report) HTML() string {
 			}
 		}
 
-		if len(sr.FailedRejected) == 0 && !sr.AcceptedStale && !sr.BuildStale {
+		if len(sr.FailedRejected) == 0 && !sr.AcceptedStale && !sr.BuildStale && len(sr.AcceptedBuilds) == 0 {
 			b.WriteString("    <div class=\"no-issues\">✓ No issues detected</div>\n")
 		}
 
@@ -366,6 +393,24 @@ func (r *Report) HTML() string {
 			}
 
 			b.WriteString("    </div>\n")
+		}
+
+		if len(sr.AcceptedBuilds) > 0 {
+			b.WriteString("    <div class=\"info-section\">ℹ️ Accepted builds with informing job failures</div>\n")
+			for _, tr := range sr.AcceptedBuilds {
+				b.WriteString("    <div class=\"build-entry-info\">\n")
+				fmt.Fprintf(&b, "      <div class=\"build-title\"><span class=\"badge badge-accepted\">Accepted</span> %s</div>\n",
+					html.EscapeString(tr.Name))
+				if len(tr.InformingFailed) > 0 {
+					names := make([]string, len(tr.InformingFailed))
+					for j, jf := range tr.InformingFailed {
+						names[j] = html.EscapeString(jf.Name)
+					}
+					fmt.Fprintf(&b, "      <div class=\"info-jobs\"><span class=\"label\">Informing failed:</span> %s</div>\n",
+						strings.Join(names, ", "))
+				}
+				b.WriteString("    </div>\n")
+			}
 		}
 
 		b.WriteString("  </div>\n</div>\n\n")
