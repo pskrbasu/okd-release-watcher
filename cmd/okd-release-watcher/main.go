@@ -35,8 +35,12 @@ func main() {
 			if o.JSONOutput {
 				fmt.Println(r.JSON())
 			} else if slackFormat {
-				fmt.Println(server.FormatSlackSummary(r, o.SlackAlias))
-				fmt.Println(server.FormatSlackDetail(r))
+				fmt.Println(server.FormatSlackMessage(r, o.SlackAlias))
+				htmlFile := "report.html"
+				if err := os.WriteFile(htmlFile, []byte(r.HTML()), 0644); err != nil {
+					return fmt.Errorf("writing HTML report: %w", err)
+				}
+				fmt.Fprintf(os.Stderr, "HTML report written to %s\n", htmlFile)
 			} else {
 				fmt.Println(r.String())
 			}
