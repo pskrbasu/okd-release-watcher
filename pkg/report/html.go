@@ -381,6 +381,8 @@ func (r *Report) HTML() string {
 			if tr.AnalysisHTMLURL != "" {
 				fmt.Fprintf(&b, "      <div class=\"analysis-link\">📋 <a href=\"%s\">Claude Payload Agent Report</a></div>\n",
 					html.EscapeString(tr.AnalysisHTMLURL))
+			} else {
+				b.WriteString("      <div class=\"analysis-link\" style=\"color: var(--text-muted);\">📋 Claude Payload Agent analysis not available</div>\n")
 			}
 
 			for _, rc := range tr.RootCauses {

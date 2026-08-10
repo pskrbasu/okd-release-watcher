@@ -524,6 +524,8 @@ func (r *Report) String() string {
 
 			if tr.AnalysisHTMLURL != "" {
 				fmt.Fprintf(&b, "    Analysis:  %s\n", tr.AnalysisHTMLURL)
+			} else {
+				fmt.Fprintf(&b, "    Analysis:  not available\n")
 			}
 
 			if len(tr.RootCauses) > 0 {
