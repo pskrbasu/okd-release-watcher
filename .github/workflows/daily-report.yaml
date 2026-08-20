@@ -2,7 +2,7 @@ name: Daily OKD Release Report
 
 on:
   schedule:
-    - cron: '0 14 * * 1-5'  # 9 AM EST (14:00 UTC), weekdays
+    - cron: '0 9 * * 1-5'   # 9 AM UTC, weekdays
   workflow_dispatch:          # manual trigger from GitHub UI
 
 permissions:
